@@ -1,0 +1,176 @@
+name: ingest
+
+# The CPU ingestion pass. Runs in the container so that Actions and Kaggle
+# execute byte-identical code -- the main reason the environment is containerised
+# at all.
+#
+# Every job is a matrix cell over one release, so one failing release does not
+# take the run down, and adding a release adds a matrix entry rather than a job.
+
+on:
+  schedule:
+    # 04:17 UTC Mondays -- off the hour on purpose, and clear of the Sunday
+    # 00:00 UTC Kaggle quota reset so GPU work queued behind it still has runway.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release id from the catalogue (blank = all ingestible)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Inspect only, write nothing'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ingest-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  plan:
+    name: plan the work units
+    runs-on: ubuntu-latest
+    outputs:
+      releases: ${{ steps.plan.outputs.releases }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: plan
+        name: Enumerate ingestible releases
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          if [ -n "${{ github.event.inputs.release || '' }}" ]; then
+            ids='["${{ github.event.inputs.release }}"]'
+          else
+            # Releases whose rows may be republished can be fetched
+            # automatically. Portal/licence-click releases are operator-placed
+            # and so are not part of an unattended run.
+            ids=$(python - <<'PY'
+          import json
+          from battery_field_agent import registry
+          auto = [r.id for r in registry.RELEASES
+                  if r.access == "http" or r.redistributable]
+          print(json.dumps(auto or [r.id for r in registry.RELEASES][:1]))
+          PY
+            )
+          fi
+          echo "planned: $ids"
+          echo "releases=$ids" >> "$GITHUB_OUTPUT"
+
+  ingest:
+    name: ingest ${{ matrix.release }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45          # well under the 12 h session caps on purpose
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false           # one bad release must not stop the others
+      matrix:
+        release: ${{ fromJson(needs.plan.outputs.releases) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore job state
+        uses: actions/cache@v4
+        with:
+          path: state
+          # Keyed per release so one release's progress never invalidates another's.
+          key: bfa-state-${{ matrix.release }}-${{ github.run_id }}
+          restore-keys: |
+            bfa-state-${{ matrix.release }}-
+
+      - name: Inspect raw data availability
+        id: probe
+        run: |
+          mkdir -p data out
+          if [ -z "$(ls -A data 2>/dev/null)" ]; then
+            echo "have_data=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_data=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ingest (container)
+        if: steps.probe.outputs.have_data == 'true' && github.event.inputs.dry_run != 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/data:/data" -v "$PWD/out:/out" -v "$PWD/state:/state" \
+            "${{ env.REGISTRY }}/${{ github.repository }}:latest" \
+            list --redistributable-only
+
+      - name: No raw data present
+        if: steps.probe.outputs.have_data == 'false'
+        run: |
+          echo "::notice::No raw data staged for ${{ matrix.release }}."
+          echo "Portal and licence-click releases are placed by the operator;"
+          echo "see docs/02-datasets.md. Skipping rather than failing."
+          echo "SKIPPED=true" >> "$GITHUB_ENV"
+
+      - name: Save job state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: bfa-state-${{ matrix.release }}-${{ github.run_id }}
+
+      # Artifacts are small on purpose: GitHub Free gives 500 MB of artifact
+      # storage, so canonical Parquet goes to Hugging Face Hub instead.
+      - name: Upload a small report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.release }}
+          path: |
+            out/*.json
+            out/*.csv
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    name: publish canonical artifacts
+    needs: ingest
+    if: github.event.inputs.dry_run != 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm the licence gate before publishing anything
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO: ${{ vars.HF_REPO }}
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          if [ -z "${HF_TOKEN:-}" ] || [ -z "${HF_REPO:-}" ]; then
+            echo "::notice::HF_TOKEN / HF_REPO not configured; nothing published."
+            exit 0
+          fi
+          python - <<'PY'
+          from battery_field_agent import registry, fetch
+          print(registry.DISTRIBUTION_POLICY)
+          publishable = []
+          for rel in registry.RELEASES:
+              ok, why = fetch.can_publish_raw(rel.id)
+              print(f"  {'PUBLISH' if ok else 'local-only':<11} {why}")
+              if ok:
+                  publishable.append(rel.id)
+          print()
+          print("Only rows from releases listed PUBLISH above may leave this runner.")
+          PY

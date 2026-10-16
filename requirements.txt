@@ -1,0 +1,7 @@
+# Container dependencies for the ingest image.
+# The core normaliser itself is stdlib-only; these are the layers it delegates to.
+duckdb>=1.0,<2          # Parquet read/write without pyarrow
+requests>=2.28          # HTTP fetch with resume; urllib is the stdlib fallback
+pandas>=2.0             # exploration + feature engineering in notebooks
+numpy>=1.24
+scipy>=1.10             # signal processing for field-data cleaning

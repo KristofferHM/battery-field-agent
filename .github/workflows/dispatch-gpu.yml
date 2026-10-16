@@ -1,0 +1,145 @@
+name: dispatch-gpu
+
+# Hands GPU work to Kaggle and nothing else.
+#
+# Kaggle's quota counts session WALL-CLOCK, not utilisation, so an idle
+# interactive notebook burns the weekly budget at full rate. Consequently this
+# workflow is the ONLY sanctioned path to a GPU: kernels are pushed
+# programmatically, run unattended, and are never left open.
+#
+# Budget: 20 h/week planned against a 30 h/week allowance (see
+# docs/04-quota-budget.md). `max_runtime_hours` below is the ceiling for one run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel:
+        description: 'Kernel slug to run (directory under kaggle/)'
+        required: true
+        default: 'rl-diagnostic-scheduler'
+      max_runtime_hours:
+        description: 'Hard ceiling for this run, in hours'
+        required: true
+        default: '4'
+      budget_note:
+        description: 'What this run is for (recorded in the run summary)'
+        required: false
+        default: ''
+  schedule:
+    # Fortnightly, Wednesday 03:11 UTC. Fortnightly rather than weekly so the
+    # retry headroom in a bad week is not consumed by the schedule itself.
+    - cron: '11 3 */14 * 3'
+
+concurrency:
+  group: dispatch-gpu
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: check the weekly budget
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.budget.outputs.allowed }}
+      hours: ${{ steps.budget.outputs.hours }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: budget
+        name: Enforce the weekly GPU ceiling
+        env:
+          MAX_HOURS: '4'
+        run: |
+          set -euo pipefail
+          requested="${{ github.event.inputs.max_runtime_hours || env.MAX_HOURS }}"
+          ceiling="20"
+          echo "requested ${requested} h against a planned weekly ceiling of ${ceiling} h"
+          if python -c "import sys; sys.exit(0 if float('${requested}') <= float('${ceiling}') else 1)"; then
+            echo "allowed=true"  >> "$GITHUB_OUTPUT"
+            echo "hours=${requested}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Requested ${requested} h exceeds the ${ceiling} h planned weekly ceiling."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+  dispatch:
+    name: push the kernel via the Kaggle API
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    environment: kaggle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: pip install --upgrade kaggle
+
+      - name: Write Kaggle credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KAGGLE_USERNAME:-}" ] || [ -z "${KAGGLE_KEY:-}" ]; then
+            echo "::error::KAGGLE_USERNAME / KAGGLE_KEY are not set. Phone-verify"
+            echo "::error::the account first: accelerators stay locked until then."
+            exit 1
+          fi
+          mkdir -p ~/.kaggle
+          printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Record the budget note
+        run: |
+          {
+            echo "## GPU dispatch"
+            echo
+            echo "- kernel: \`${{ github.event.inputs.kernel || 'rl-diagnostic-scheduler' }}\`"
+            echo "- ceiling: **${{ needs.guard.outputs.hours }} h**"
+            echo "- purpose: ${{ github.event.inputs.budget_note || 'scheduled run' }}"
+            echo "- weekly allowance: 30 h · planned ceiling: 20 h"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push the kernel
+        run: |
+          set -euo pipefail
+          kernel="${{ github.event.inputs.kernel || 'rl-diagnostic-scheduler' }}"
+          # --accelerator must match what the account can actually get; the
+          # accelerator menu changes, so this is a variable rather than a literal.
+          kaggle kernels push -p "kaggle/${kernel}"
+
+      - name: Wait for completion
+        run: |
+          set -euo pipefail
+          kernel="${{ github.event.inputs.kernel || 'rl-diagnostic-scheduler' }}"
+          # Kaggle versions a kernel per push; the status endpoint is polled so
+          # this job holds no GPU time of its own.
+          ref="${KAGGLE_USERNAME}/${kernel}"
+          for attempt in $(seq 1 120); do
+            status=$(kaggle kernels status "$ref" 2>&1 || true)
+            echo "[$attempt] $status"
+            case "$status" in
+              *complete*|*error*) break ;;
+            esac
+            sleep 60
+          done
+
+      - name: Pull the outputs
+        if: always()
+        run: |
+          set -euo pipefail
+          kernel="${{ github.event.inputs.kernel || 'rl-diagnostic-scheduler' }}"
+          mkdir -p gpu-out
+          kaggle kernels output "${KAGGLE_USERNAME}/${kernel}" -p gpu-out || true
+          ls -la gpu-out || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-out
+          path: gpu-out
+          if-no-files-found: ignore
+          retention-days: 14

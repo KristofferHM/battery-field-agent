@@ -1,0 +1,13 @@
+# Battery cycler export -- messy on purpose, as real exports are.
+# 3 preamble lines before the real header, units carried in the header,
+# time in milliseconds, voltage in millivolts, and the source logs
+# DISCHARGE AS NEGATIVE CURRENT.
+Device: Maccor 4200
+Operator: K. Harr
+Cell,Cycle,Step,StepType,Time(ms),Voltage(mV),Current(mA),Temperature(C),Charge_Capacity(mAh),Discharge_Capacity(mAh)
+B0005,1,1,charge,0,3200,1500,24.1,0.0,0.0
+B0005,1,1,charge,60000,3450,1500,24.3,25.0,0.0
+B0005,1,1,charge,120000,4200,1500,24.6,50.0,0.0
+B0005,1,2,discharge,180000,4100,-1500,24.9,0.0,0.0
+B0005,1,2,discharge,240000,3600,-1500,25.2,0.0,25.0
+B0005,1,2,discharge,300000,3000,-1500,25.4,0.0,50.0

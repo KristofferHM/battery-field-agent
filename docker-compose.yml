@@ -1,0 +1,45 @@
+# Local reproduction of the CI environment.
+#
+# The point of this file is parity, not deployment: `docker compose run --rm
+# ingest ...` must behave the same as the Actions job and the Kaggle kernel.
+# There is no long-running service here by design -- nothing in this project
+# needs a scheduler that outlives its compute.
+
+services:
+  ingest:
+    build: .
+    image: battery-field-agent:local
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app/src
+      BFA_DATA_DIR: /data
+      BFA_OUT_DIR: /out
+    volumes:
+      - ./data:/data
+      - ./out:/out
+      - ./state:/state
+    # No ports, no restart policy, no healthcheck: this container exists to
+    # finish and exit.
+    command: ["list", "--policy"]
+
+  # Runs the suite with no third-party packages at all, to prove the claim that
+  # the core is dependency-free.
+  test-bare:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      PYTHONPATH: /app/src
+    command: ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+
+  # Runs the suite with duckdb present, so the Parquet tests actually execute
+  # instead of skipping.
+  test-full:
+    build: .
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      PYTHONPATH: /app/src
+    command: ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "battery-field-agent"
+version = "0.1.0"
+description = "Agentic ingestion and diagnostics pipeline for public battery field data, on free-tier cloud compute."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Kristoffer Harr" }]
+keywords = ["battery", "field-data", "agents", "orchestration", "rl", "materials"]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# The core is dependency-free by design: the same rules must run on the laptop,
+# in the ingest container and in a Kaggle kernel.
+dependencies = []
+
+[project.optional-dependencies]
+parquet = ["duckdb>=1.0"]
+http = ["requests>=2.28"]
+science = ["pandas>=2.0", "numpy>=1.24", "scipy>=1.10", "duckdb>=1.0"]
+dev = ["pandas>=2.0", "numpy>=1.24", "scipy>=1.10", "duckdb>=1.0", "requests>=2.28"]
+
+[project.scripts]
+bfa = "battery_field_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+battery_field_agent = ["py.typed"]

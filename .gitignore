@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data — never commit raw or derived battery data
+data/
+out/
+*.parquet
+*.duckdb
+*.mat
+*.h5
+*.hdf5
+!tests/fixtures/*.csv
+
+# Secrets
+.env
+.env.*
+!.env.example
+kaggle.json
+*.pem
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
