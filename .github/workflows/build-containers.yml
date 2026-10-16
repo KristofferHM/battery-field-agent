@@ -98,5 +98,19 @@ jobs:
 
       - name: Smoke-test the image
         if: github.event_name != 'pull_request'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
-          docker run --rm "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}" list
+          set -euo pipefail
+          # Two traps here, both caught by the first real CI run:
+          #  1. docker/metadata-action lowercases the owner. Hand-building the
+          #     reference from github.repository keeps the capitals, and docker
+          #     rejects it: "repository name must be lowercase".
+          #  2. buildx with push:true does not load the image into the local
+          #     daemon, so a bare `docker run` cannot find it. Pull first.
+          # Using the action's own tag output fixes both: already lowercased,
+          # already matching what was pushed.
+          ref="$(printf '%s\n' "$IMAGE_TAGS" | head -1)"
+          echo "smoke-testing $ref"
+          docker pull "$ref"
+          docker run --rm "$ref" list
