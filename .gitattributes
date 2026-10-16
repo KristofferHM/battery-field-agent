@@ -1,0 +1,20 @@
+# Normalise line endings. The repo targets Linux containers (Docker, Actions,
+# Kaggle) but is developed on Windows, so text files are LF in the repo AND in
+# the working tree -- otherwise every checkout shows phantom modifications and
+# a Windows-edited file arrives at the container with CRLF.
+
+* text=auto eol=lf
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary -- never touch these
+*.parquet binary
+*.duckdb  binary
+*.mat     binary
+*.h5      binary
+*.hdf5    binary
+*.png     binary
+*.jpg     binary
+*.zip     binary
